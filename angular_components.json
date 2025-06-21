@@ -1,0 +1,6 @@
+[
+  { "component": "KpiCard", "description": "Displays key metrics", "inputs": ["value", "label"], "outputs": [] },
+  { "component": "LineChart", "description": "Displays trends over time", "inputs": ["xField", "yField"], "outputs": [] },
+  { "component": "GaugeChart", "description": "Shows percentage metrics", "inputs": ["value"], "outputs": [] },
+  { "component": "BarChart", "description": "Displays categorical data", "inputs": ["xField", "yField"], "outputs": [] }
+]
