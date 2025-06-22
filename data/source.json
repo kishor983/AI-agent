@@ -2,16 +2,65 @@
    "source": "us:vi:edw",
    "type": "bar",
    "attributes": [
-      { "ticket_id": "123", "resolved_count": 5, "date": "2025-06-01" },
-      { "ticket_id": "124", "resolved_count": 8, "date": "2025-06-02" },
-      { "ticket_id": "125", "resolved_count": 10, "date": "2025-06-03" },
-      { "ticket_id": "126", "resolved_count": 12, "date": "2025-06-04" },
-      { "ticket_id": "127", "resolved_count": 15, "date": "2025-06-05" },
-      { "ticket_id": "128", "resolved_count": 18, "date": "2025-06-06" },
-      { "ticket_id": "129", "resolved_count": 20, "date": "2025-06-07" },
-      { "ticket_id": "130", "resolved_count": 22, "date": "2025-06-08" },
-      { "ticket_id": "131", "resolved_count": 25, "date": "2025-06-09" },
-      { "ticket_id": "132", "resolved_count": 28, "date": "2025-06-10" }
-
+      {
+         "ticket_id": "123",
+         "resolved": 5,
+         "date": "2025-06-01",
+         "ticket": 10
+      },
+      {
+         "ticket_id": "124",
+         "resolved": 20,
+         "date": "2025-06-02",
+         "ticket": 20
+      },
+      {
+         "ticket_id": "125",
+         "resolved": 22,
+         "date": "2025-06-03",
+         "ticket": 30
+      },
+      {
+         "ticket_id": "126",
+         "resolved": 12,
+         "date": "2025-06-04",
+         "ticket": 40
+      },
+      {
+         "ticket_id": "127",
+         "resolved": 45,
+         "date": "2025-06-05",
+         "ticket": 50
+      },
+      {
+         "ticket_id": "128",
+         "resolved": 18,
+         "date": "2025-06-06",
+         "ticket": 60
+      },
+      {
+         "ticket_id": "129",
+         "resolved": 40,
+         "date": "2025-06-07",
+         "ticket": 70
+      },
+      {
+         "ticket_id": "130",
+         "resolved": 22,
+         "date": "2025-06-08",
+         "ticket": 80
+      },
+      {
+         "ticket_id": "131",
+         "resolved": 50,
+         "date": "2025-06-09",
+         "ticket": 90
+      },
+      {
+         "ticket_id": "132",
+         "resolved": 70,
+         "date": "2025-06-10",
+         "ticket": 100
+      }
    ]
 }

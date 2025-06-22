@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import dotenv from "dotenv";
+// Remove import assertions and rely on tsconfig.json resolveJsonModule
 import componentJson from "../angular_components.json";
 import sourceData from "../data/source.json";
 
@@ -46,19 +47,43 @@ Analyze the user input to understand the intent (e.g., aggregate metrics, trends
 Select visualization components from angular_components.json that best suit the intent and data characteristics, ensuring variety and avoiding repetitive outputs.
 Generate detailed JSON configurations for each recommended component, including data mappings, labels, and styling options.
 Focus on patterns, relationships, and business context, and provide clear, natural-language explanations for the recommendations.
+
+**Tool Usage Instructions**:
+1. **Field Extraction**: Identify fields mentioned in the input (e.g., "resolved tickets" → ["resolved"]). Default to ["resolved"] if none are mentioned.
+2. **Focus Areas**: Extract analysis types (e.g., "trend", "total", "performance") for focusAreas.
+3. **Analysis Depth**: Use "detailed" for analysisDepth unless "basic" is explicitly requested (e.g., "simple analysis").
+4. **Tool Sequencing**:
+   - Call "analyzeDynamically" first to compute metrics for the specified focusAreas and targetFields.
+   - Only call "generateDynamicInsights" after "analyzeDynamically" produces results, using its metrics output as dataFindings.
+   - Call "inferFieldMeanings" if field meanings are unclear.
+   - Call "buildDeveloperResponse" to finalize visualization configs after insights are generated.
+5. **Avoid Premature Calls**: Do not call "generateDynamicInsights" without valid dataFindings.
+
+Example Input: "Analyze the trend and total count of resolved tickets."
+Example Output: [
+  {
+    "name": "analyzeDynamically",
+    "parameters": {
+      "focusAreas": ["trend", "total"],
+      "analysisDepth": "detailed",
+      "targetFields": ["resolved"]
+    }
+  }
+]
 `;
 
 const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "analyze_data_dynamically",
-      description: "Analyzes data dynamically based on focus areas and depth",
+      name: "analyzeDynamically",
+      description: "Analyzes data dynamically based on focus areas (e.g., 'trend', 'performance', 'total') and optional target fields (e.g., 'resolved', 'ticket'). If no fields are specified, defaults to relevant fields like 'resolved'.",
       parameters: {
         type: "object",
         properties: {
           focusAreas: { type: "array", items: { type: "string" } },
           analysisDepth: { type: "string", enum: ["basic", "detailed"], default: "detailed" },
+          targetFields: { type: "array", items: { type: "string" } },
         },
         required: ["focusAreas"],
       },
@@ -67,13 +92,11 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "infer_field_semantics",
+      name: "inferFieldMeanings",
       description: "Infers semantic meanings of data fields",
       parameters: {
         type: "object",
-        properties: {
-          fields: { type: "array", items: { type: "string" } },
-        },
+        properties: { fields: { type: "array", items: { type: "string" } } },
         required: ["fields"],
       },
     },
@@ -81,13 +104,13 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "generate_insights_and_recommendations",
-      description: "Generates insights and visualization recommendations based on user intent",
+      name: "generateDynamicInsights",
+      description: "Generates insights and visualization recommendations based on user intent and data findings from analyzeDynamically",
       parameters: {
         type: "object",
         properties: {
           userIntent: { type: "string" },
-          dataFindings: { type: "object" },
+          dataFindings: { type: "object", description: "Metrics output from analyzeDynamically" },
         },
         required: ["userIntent", "dataFindings"],
       },
@@ -96,7 +119,7 @@ const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "build_component_response",
+      name: "buildDeveloperResponse",
       description: "Builds a response with JSON configs for visualization components",
       parameters: {
         type: "object",
@@ -123,46 +146,44 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
       throw new Error("Invalid user input: must be a non-empty string");
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       throw new Error("Missing OPENAI_API_KEY environment variable.");
     }
 
     const client = new OpenAI({
       baseURL: "https://models.github.ai/inference",
-      apiKey:apiKey
-   });
+      apiKey:apiKey,
+    });
 
-    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: "system", content: DYNAMIC_SYSTEM_PROMPT },
       { role: "user", content: userInput },
     ];
-
     let analysisResults: AnalysisResults = {};
-    let currentMessages = [...messages];
 
-    let firstResponse: OpenAI.Chat.Completions.ChatCompletion;
-    try {
-      firstResponse = await client.chat.completions.create({
-        model: "openai/gpt-4.1-mini",
+    let hasMoreToolCalls = true;
+    let iteration = 0;
+    const maxIterations = 5;
+
+    while (hasMoreToolCalls && iteration < maxIterations) {
+      iteration++;
+      const response = await client.chat.completions.create({
+        model: "openai/gpt-4.1",
         messages,
         tools,
-        tool_choice: "auto"
+        tool_choice: "auto",
       });
-    } catch (apiError: any) {
-      if (apiError.status === 401) {
-        throw new Error("API authentication failed: Invalid API key.");
-      } else if (apiError.status === 404) {
-        throw new Error("API endpoint or model not found.");
-      } else {
-        throw new Error(`API request failed: ${apiError.message}`);
+
+      const responseMessage = response.choices[0].message;
+      messages.push(responseMessage);
+
+      if (!responseMessage.tool_calls?.length) {
+        hasMoreToolCalls = false;
+        break;
       }
-    }
 
-    currentMessages.push(firstResponse.choices[0].message);
-
-    if (firstResponse.choices[0].message.tool_calls?.length) {
-      for (const toolCall of firstResponse.choices[0].message.tool_calls) {
+      for (const toolCall of responseMessage.tool_calls) {
         let args: any;
         try {
           args = JSON.parse(toolCall.function.arguments);
@@ -173,41 +194,48 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
 
         let toolResult: any = {};
         switch (toolCall.function.name) {
-          case "analyze_data_dynamically":
-            toolResult = analyzeDynamically(args.focusAreas, args.analysisDepth || "detailed");
+          case "analyzeDynamically":
+            toolResult = analyzeDynamically(args.focusAreas, args.analysisDepth || "detailed", args.targetFields || []);
             analysisResults.dataAnalysis = toolResult;
             break;
-          case "infer_field_semantics":
+          case "inferFieldMeanings":
             toolResult = inferFieldMeanings(args.fields);
             analysisResults.fieldSemantics = toolResult;
             break;
-          case "generate_insights_and_recommendations":
-            toolResult = generateDynamicInsights(args.userIntent, args.dataFindings);
-            analysisResults.insights = toolResult;
+          case "generateDynamicInsights":
+            if (!args.dataFindings && analysisResults.dataAnalysis?.metrics) {
+              args.dataFindings = analysisResults.dataAnalysis.metrics;
+            }
+            if (!args.dataFindings) {
+              toolResult = { error: "Missing dataFindings; run analyzeDynamically first" };
+            } else {
+              toolResult = generateDynamicInsights(args.userIntent, args.dataFindings);
+              analysisResults.insights = toolResult;
+            }
             break;
-          case "build_component_response":
+          case "buildDeveloperResponse":
             return buildDeveloperResponse(args.recommendations, args.insights);
           default:
             console.warn(`Unknown tool function: ${toolCall.function.name}`);
             continue;
         }
 
-        currentMessages.push({
+        messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
           content: JSON.stringify(toolResult),
         });
       }
-    }
 
-    if (analysisResults.insights?.visualizationStrategies?.length) {
-      const recommendations = analysisResults.insights.visualizationStrategies.map((s) => ({
-        componentType: s.component,
-        purpose: s.purpose,
-        dataMapping: s.dataMapping,
-        configuration: s.configuration,
-      }));
-      return buildDeveloperResponse(recommendations, analysisResults.insights);
+      if (analysisResults.insights?.visualizationStrategies?.length) {
+        const recommendations = analysisResults.insights.visualizationStrategies.map((s) => ({
+          componentType: s.component,
+          purpose: s.purpose,
+          dataMapping: s.dataMapping,
+          configuration: s.configuration,
+        }));
+        return buildDeveloperResponse(recommendations, analysisResults.insights);
+      }
     }
 
     return buildFallbackResponse(analysisResults, userInput);
@@ -220,7 +248,7 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
   }
 }
 
-function analyzeDynamically(focusAreas: string[], depth: string): any {
+function analyzeDynamically(focusAreas: string[], depth: string = "detailed", targetFields: string[] = []): any {
   if (!Array.isArray(sourceData?.attributes) || sourceData.attributes.length === 0) {
     return { error: "Invalid or empty data source" };
   }
@@ -229,7 +257,7 @@ function analyzeDynamically(focusAreas: string[], depth: string): any {
   const fields = Object.keys(data[0] || {});
   const fieldTypes: Record<string, any> = {};
   const fieldStats: Record<string, any> = {};
-  const metrics: Record<string, number> = {};
+  const metrics: Record<string, any> = {};
   const timeSeries: Record<string, any> = {};
 
   fields.forEach((field) => {
@@ -252,7 +280,7 @@ function analyzeDynamically(focusAreas: string[], depth: string): any {
       sparsity: (data.length - values.length) / data.length,
     };
 
-    if (isNumeric) {
+    if (isNumeric && (targetFields.includes(field) || targetFields.length === 0)) {
       fieldStats[field] = {
         min: values.length ? Math.min(...(values as number[])) : 0,
         max: values.length ? Math.max(...(values as number[])) : 0,
@@ -260,9 +288,6 @@ function analyzeDynamically(focusAreas: string[], depth: string): any {
         sum: values.length ? (values as number[]).reduce((a, b) => a + b, 0) : 0,
         variance: values.length ? variance(values as number[]) : 0,
       };
-      if (field.toLowerCase().includes("error") || field.toLowerCase().includes("failed")) {
-        metrics[`${field}_percentage`] = values.length ? ((values as number[]).filter((v) => v > 0).length / values.length) * 100 : 0;
-      }
     } else if (isTemporal) {
       timeSeries[field] = data.map((row) => ({ date: row[field], values: row }));
     } else {
@@ -273,15 +298,68 @@ function analyzeDynamically(focusAreas: string[], depth: string): any {
     }
   });
 
-  focusAreas = Array.isArray(focusAreas) ? focusAreas : [];
+  const defaultFields = ["resolved"];
+  const validFields = targetFields.filter((field) => fields.includes(field) && fieldTypes[field].type === "numeric");
+  const analysisFields = validFields.length > 0 ? validFields : defaultFields;
+
   focusAreas.forEach((area) => {
-    if (area?.toLowerCase().includes("incident") || area?.toLowerCase().includes("performance")) {
-      const incidentField = fields.find((f) => f.toLowerCase().includes("incident") || f.toLowerCase().includes("ticket") || f.toLowerCase().includes("resolved"));
-      if (incidentField && fieldTypes[incidentField]?.type === "numeric") {
-        metrics[`${incidentField}_avg`] = fieldStats[incidentField].avg;
-        metrics[`${incidentField}_total`] = fieldStats[incidentField].sum;
-      }
+    const config = {
+      total: { metrics: ["sum"] },
+      trend: { metrics: ["time_series"], dateField: "date" },
+      performance: { metrics: ["avg", "sum", "ratio"] },
+    }[area.toLowerCase()];
+
+    if (!config) {
+      metrics[area] = { error: `Unsupported focus area: ${area}` };
+      return;
     }
+
+    const { metrics: targetMetrics, dateField } = config;
+
+    analysisFields.forEach((field) => {
+      if (!fieldTypes[field] || fieldTypes[field].type !== "numeric") {
+        metrics[field] = { error: `Field ${field} is missing or non-numeric` };
+        return;
+      }
+
+      metrics[field] = metrics[field] || {};
+
+      targetMetrics.forEach((metric) => {
+        if (depth === "basic" && metric === "time_series") {
+          return;
+        }
+
+        switch (metric) {
+          case "sum":
+            metrics[field].total = fieldStats[field]?.sum || 0;
+            break;
+          case "avg":
+            metrics[field].average = fieldStats[field]?.avg || 0;
+            break;
+          case "time_series":
+            if (dateField && data) {
+              metrics[field].trend = data
+                .sort((a, b) => {
+                  const dateA = a[dateField] ? new Date(a[dateField] as string).getTime() : 0;
+                  const dateB = b[dateField] ? new Date(b[dateField] as string).getTime() : 0;
+                  return dateA - dateB;
+                })
+                .map((item) => ({
+                  date: item[dateField],
+                  value: item[field],
+                }));
+            }
+            break;
+          case "ratio":
+            if (analysisFields.length > 1 && fieldStats[analysisFields[0]] && fieldStats[analysisFields[1]]) {
+              metrics.performance_ratio = (fieldStats[analysisFields[0]].sum / fieldStats[analysisFields[1]].sum) || 0;
+            }
+            break;
+          default:
+            metrics[field][metric] = { error: `Unsupported metric: ${metric}` };
+        }
+      });
+    });
   });
 
   return {
@@ -387,151 +465,80 @@ function generateDynamicInsights(userIntent: string, dataFindings: any): Insight
     visualizationStrategies: [],
   };
 
-  const intentLower = userIntent.toLowerCase();
-  const tokens = intentLower.split(/\s+/);
-  const entities = {
-    metrics: [] as string[],
-    dimensions: [] as string[],
-    operations: [] as string[],
-  };
-
-  tokens.forEach((token) => {
-    if (["error", "incident", "ticket", "count", "resolved", "resolution"].includes(token)) {
-      entities.metrics.push(token);
-    } else if (["date", "time", "over"].includes(token)) {
-      entities.dimensions.push("temporal");
-    } else if (["percentage", "rate", "ratio"].includes(token)) {
-      entities.operations.push("calculate_percentage");
-    } else if (["performance", "efficiency", "total"].includes(token)) {
-      entities.operations.push("aggregate_metrics");
-    } else if (["trend", "over time"].includes(token)) {
-      entities.operations.push("trend_analysis");
-    } else if (["compare", "versus"].includes(token)) {
-      entities.operations.push("comparison");
-    }
-  });
-
-  const fieldMappings = mapMetricsToDataFields(entities.metrics, dataFindings);
-  const temporalField = Object.keys(dataFindings.fieldTypes || {}).find((f) => dataFindings.fieldTypes[f].isTemporal);
-
-  if (entities.operations.includes("aggregate_metrics")) {
-    const aggResult = aggregateMetrics(fieldMappings, dataFindings);
-    insights.keyFindings.push({
-      type: "aggregation",
-      description: aggResult.description || "No aggregation calculated",
-      value: aggResult.value || 0,
-    });
-    const kpiComponent = componentList.find((c) => c.component.toLowerCase().includes("kpi"));
-    if (kpiComponent) {
-      insights.visualizationStrategies.push({
-        primary: "performance_dashboard",
-        component: kpiComponent.component,
-        purpose: "Display total performance metrics",
-        dataMapping: {
-          value: aggResult.value,
-          label: Object.keys(fieldMappings)[0] || "Performance",
-        },
-        configuration: {
-          title: `Total ${Object.keys(fieldMappings)[0] || "Performance"}`,
-          color: "#3B82F6",
-          format: "number",
-        },
+  for (const field in dataFindings) {
+    if (dataFindings[field].total) {
+      insights.keyFindings.push({
+        type: "aggregation",
+        description: `Total count of ${field}: ${dataFindings[field].total}`,
+        value: dataFindings[field].total,
       });
+      const kpiComponent = componentList.find((c) => c.component.toLowerCase().includes("kpi"));
+      if (kpiComponent) {
+        insights.visualizationStrategies.push({
+          primary: "performance_dashboard",
+          component: kpiComponent.component,
+          purpose: `Display total ${field} count`,
+          dataMapping: {
+            value: dataFindings[field].total,
+            label: field,
+          },
+          configuration: {
+            title: `Total ${field}`,
+            color: "#3B82F6",
+            format: "number",
+          },
+        });
+      }
     }
   }
 
-  if (entities.operations.includes("trend_analysis") && temporalField) {
-    const trendResult = analyzeTrend(fieldMappings, dataFindings, temporalField);
-    insights.keyFindings.push({
-      type: "trend",
-      description: trendResult.description || "No trend calculated",
-      data: trendResult.data || [],
-    });
-    const lineComponent = componentList.find((c) => c.component.toLowerCase().includes("line"));
-    if (lineComponent) {
-      insights.visualizationStrategies.push({
-        primary: "time_series_analysis",
-        component: lineComponent.component,
-        purpose: "Visualize performance trends over time",
-        dataMapping: {
-          xField: temporalField,
-          yField: Object.values(fieldMappings)[0] || "resolved_count",
-        },
-        configuration: {
-          title: `Trend for ${Object.keys(fieldMappings)[0] || "Resolved Tickets"}`,
-          xAxisLabel: "Date",
-          yAxisLabel: "Count",
-          lineColor: "#10B981",
-          type: "line",
-          datasets: [
-            {
-              label: Object.keys(fieldMappings)[0] || "Resolved Tickets",
-              data: trendResult.data.map((d: any) => d.value),
-              borderColor: "#10B981",
-              fill: false,
-            },
-          ],
-        },
+  for (const field in dataFindings) {
+    if (dataFindings[field].trend) {
+      const trendData = dataFindings[field].trend;
+      const values = trendData.map((d: any) => d.value);
+      const trendVal = values.length > 1 ? trend(values) : 0;
+      const description = `Trend for ${field} is ${trendVal > 0 ? "increasing" : trendVal < 0 ? "decreasing" : "stable"}`;
+      insights.keyFindings.push({
+        type: "trend",
+        description,
+        data: trendData,
       });
+      const lineComponent = componentList.find((c) => c.component.toLowerCase().includes("line"));
+      if (lineComponent) {
+        insights.visualizationStrategies.push({
+          primary: "time_series_analysis",
+          component: lineComponent.component,
+          purpose: `Visualize ${field} trend over time`,
+          dataMapping: {
+            xField: "date",
+            yField: field,
+          },
+          configuration: {
+            title: `${field} Trend`,
+            xAxisLabel: "Date",
+            yAxisLabel: field,
+            lineColor: "#10B981",
+            type: "line",
+            datasets: [
+              {
+                label: field,
+                data: trendData.map((d: any) => d.value),
+                borderColor: "#10B981",
+                fill: false,
+              },
+            ],
+          },
+        });
+      }
     }
   }
 
-  if (entities.operations.includes("calculate_percentage")) {
-    const percentageResult = calculatePercentage(fieldMappings, dataFindings);
-    insights.keyFindings.push({
-      type: "percentage",
-      description: percentageResult.description || "No percentage calculated",
-      value: percentageResult.value || 0,
-    });
-    const gaugeComponent = componentList.find((c) => c.component.toLowerCase().includes("gauge"));
-    if (gaugeComponent) {
-      insights.visualizationStrategies.push({
-        primary: "percentage_dashboard",
-        component: gaugeComponent.component,
-        purpose: "Show percentage of resolved tickets",
-        dataMapping: {
-          value: percentageResult.value,
-          max: 100,
-        },
-        configuration: {
-          title: `${Object.keys(fieldMappings)[0] || "Resolution"} Rate`,
-          colorRange: ["#EF4444", "#FBBF24", "#10B981"],
-          format: "percentage",
-        },
-      });
-    }
-  }
-
-  if (!insights.visualizationStrategies.length) {
-    const barComponent = componentList.find((c) => c.component.toLowerCase().includes("bar"));
-    const data: DataRecord[] = sourceData.attributes || [];
-    const fields = data[0] ? Object.keys(data[0]) : [];
-    if (barComponent) {
-      const defaultField = Object.values(fieldMappings)[0] || Object.keys(dataFindings.fieldTypes || {})[0] || fields[0] || "";
-      insights.visualizationStrategies.push({
-        primary: "exploratory_dashboard",
-        component: barComponent.component,
-        purpose: "Explore data distribution",
-        dataMapping: {
-          xField: defaultField,
-          yField: "count",
-        },
-        configuration: {
-          title: "Data Distribution",
-          xAxisLabel: "Category",
-          yAxisLabel: "Count",
-          type: "bar",
-          datasets: [
-            {
-              label: defaultField,
-              data: distribution(data.map((row) => row[defaultField])),
-              backgroundColor: "#3B82F6",
-            },
-          ],
-        },
-      });
-    }
-  }
+  insights.businessImplications = [
+    `The trend in ${Object.keys(dataFindings)[0] || "resolved tickets"} indicates operational efficiency changes.`,
+  ];
+  insights.recommendedActions = [
+    `Monitor ${Object.keys(dataFindings)[0] || "resolved tickets"} closely to identify bottlenecks.`,
+  ];
 
   return insights;
 }
@@ -933,7 +940,7 @@ function distribution(values: any[]): any {
   values.forEach((val) => {
     distribution[val] = (distribution[val] || 0) + 1;
   });
-  return Object.values(distribution);
+  return distribution;
 }
 
 function mostCommon(values: any[]): string | null {
