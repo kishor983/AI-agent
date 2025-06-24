@@ -6,13 +6,19 @@ import sourceData from "../data/source.json";
 
 dotenv.config();
 
+interface AnalysisPlan {
+  [focusArea: string]: {
+    metrics: string[];
+    dateField?: string;
+  };
+}
 interface Component {
   component: string;
   description: string;
   inputs: string[];
   outputs: string[];
 }
-
+let UserInput = '';
 interface DataRecord {
   [key: string]: string | number | undefined;
 }
@@ -139,9 +145,207 @@ const componentList: Component[] = componentJson.map((comp: any) => ({
   inputs: comp.inputs || [],
   outputs: comp.outputs || [],
 }));
+function isValidAnalysisPlan(obj: any): obj is AnalysisPlan {
+  return (
+    obj &&
+    Array.isArray(obj.keyFindings) &&
+    Array.isArray(obj.businessImplications) &&
+    Array.isArray(obj.recommendedActions) &&
+    Array.isArray(obj.visualizationStrategies)
+  );
+}
+async function callAIToGeneratePlan(
+  focusAreas: string[],
+  userPrompt: string,
+  fieldMetadata: any
+): Promise<AnalysisPlan> {
+  // Input validation
+  if (!Array.isArray(focusAreas)) {
+    console.error("Invalid focusAreas: must be an array");
+    return {};
+  }
+  if (typeof userPrompt !== "string" || !userPrompt.trim()) {
+    console.error("Invalid userPrompt: must be a non-empty string");
+    return {};
+  }
+  if (!fieldMetadata || typeof fieldMetadata !== "object" || !Object.keys(fieldMetadata).length) {
+    console.error("Invalid fieldMetadata: must be a non-empty object");
+    return {};
+  }
 
+  // Use environment variable for API key
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    console.error("Missing OPENAI_API_KEY environment variable");
+    return {};
+  }
+
+  const client = new OpenAI({
+    baseURL: "https://models.github.ai/inference",// Correct OpenAI endpoint
+    apiKey,
+  });
+
+  const systemPrompt = `
+You are an analytics planning assistant.
+Given a list of focus areas and available dataset fields,
+suggest a JSON plan for each focus area with:
+- Relevant metrics to compute (choose from: sum, avg, ratio, time_series)
+- A date field (only if time_series is used)
+Only use fields from this list: ${Object.keys(fieldMetadata).join(", ")}.
+Return only valid JSON in this format:
+
+{
+  "focusArea1": { "metrics": [...], "dateField": "..." },
+  "focusArea2": { "metrics": [...] }
+}
+`;
+
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: `Focus areas: ${JSON.stringify(focusAreas)}\nUser prompt: ${userPrompt}` },
+  ];
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "openai/gpt-4.1-mini", // Use a verified model (adjust as needed)
+      messages,
+    });
+
+    // Validate response structure
+    if (!response.choices?.[0]?.message?.content) {
+      console.error("Invalid API response: no content received");
+      return {};
+    }
+
+    const content = response.choices[0].message.content;
+
+    // Parse JSON response
+    try {
+      const parsedPlan = JSON.parse(content);
+      if (typeof parsedPlan !== "object" || parsedPlan === null) {
+        console.error("Parsed response is not a valid object:", content);
+        return {};
+      }
+      return parsedPlan;
+    } catch (e) {
+      console.error("Failed to parse AI response as JSON:", content, e);
+      return {};
+    }
+  } catch (e) {
+    console.error("API call failed:", (e as Error).message);
+    return {};
+  }
+}
+async function _generateDynamicInsights(
+  userIntent: string,
+  dataFindings: any
+): Promise<AnalysisPlan | { error: string }> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return { error: "Missing OPENAI_API_KEY environment variable" };
+  }
+
+  const client = new OpenAI({
+    baseURL: "https://models.github.ai/inference",
+    apiKey,
+  });
+
+  const systemPrompt = `
+  You are an AI business analyst. Based on the user intent and summarized dataset below, generate the following:
+  
+  - keyFindings: actionable insights such as trends, aggregations, anomalies, etc.
+  - businessImplications: explain what these insights mean for the business.
+  - recommendedActions: specific actions the business should consider.
+  - visualizationStrategies: suggest visualizations using only the provided component list.
+  
+  Component List:
+  ${JSON.stringify(componentList, null, 2)}
+  
+  Choose the most suitable component from the list based on the data characteristics and user intent.
+  - Use KpiCard or GaugeChart for single values (e.g., totals, percentages).
+  - Use LineChart for time-based data (trends).
+  - Use BarChart for categorical comparisons (e.g., counts per category).
+  Do not invent components or use anything not listed.  
+  
+  User Intent:
+  ${userIntent}
+  
+  Data Summary:
+  ${JSON.stringify(dataFindings, null, 2)}
+  
+  You must return your response ONLY as valid JSON, exactly in this format:
+  {
+    "keyFindings": [...],
+    "businessImplications": [...],
+    "recommendedActions": [...],
+    "visualizationStrategies": [
+      {
+        "component": string,
+        "description": string,
+        "inputs": {
+          // For KPI visualizations:
+          "value"?: number,
+          "label"?: string,
+  
+          // For time-series or category-based charts:
+          "xValues"?: [array of actual x-axis values],
+          "yValues"?: [array of corresponding y-axis values]
+        }
+      }
+    ]
+  }
+  
+  STRICT RULES:
+  - For KPI-style visualizations (e.g., KpiCard), include ONLY 'value' and 'label' inside 'inputs'.
+  - For charts (e.g., LineChart, BarChart), use 'xValues' and 'yValues' inside 'inputs'.
+  - DO NOT return field names like "xField": "date" — use actual extracted values like xValues = ["2025-06-01", ...].
+  - DO NOT place 'value' or 'label' outside the 'inputs' block.
+  - DO NOT include markdown, extra text, or explanations — respond with raw JSON only.
+  - Ensure the response is directly parseable with JSON.parse() without modification.
+  `.trim();
+
+
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+  ];
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "openai/gpt-4.1-mini",
+      messages,
+    });
+
+    const content = response.choices?.[0]?.message?.content;
+    if (!content) {
+      return { error: "No content returned from LLM" };
+    }
+
+    const cleaned = content
+      .trim()
+      .replace(/^```json/, "")
+      .replace(/^```/, "")
+      .replace(/```$/, "")
+      .trim();
+    try {
+      const parsed = JSON.parse(cleaned);
+
+      if (!isValidAnalysisPlan(parsed)) {
+        return { error: "Parsed response missing expected fields" };
+      }
+
+      return parsed;
+    } catch (e) {
+      console.error("Parse error:", cleaned);
+      return { error: "Failed to parse JSON from LLM" };
+    }
+  } catch (e) {
+    console.error("LLM API call error:", e);
+    return { error: "API call failed: " + (e as Error).message };
+  }
+}
 export async function runAgent(userInput: string): Promise<{ action: string; action_input: any }> {
   try {
+    UserInput = userInput;
     if (!userInput || typeof userInput !== "string") {
       throw new Error("Invalid user input: must be a non-empty string");
     }
@@ -153,7 +357,7 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
 
     const client = new OpenAI({
       baseURL: "https://models.github.ai/inference",
-      apiKey:apiKey,
+      apiKey: apiKey,
     });
 
     let messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -164,12 +368,12 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
 
     let hasMoreToolCalls = true;
     let iteration = 0;
-    const maxIterations = 5;
+    const maxIterations = 3;
 
     while (hasMoreToolCalls && iteration < maxIterations) {
       iteration++;
       const response = await client.chat.completions.create({
-        model: "openai/gpt-4.1",
+        model: "openai/gpt-4.1-mini",
         messages,
         tools,
         tool_choice: "auto",
@@ -195,7 +399,8 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
         let toolResult: any = {};
         switch (toolCall.function.name) {
           case "analyzeDynamically":
-            toolResult = analyzeDynamically(args.focusAreas, args.analysisDepth || "detailed", args.targetFields || []);
+
+            toolResult = await analyzeDynamically(args.focusAreas, args.analysisDepth || "detailed", args.targetFields || []);
             analysisResults.dataAnalysis = toolResult;
             break;
           case "inferFieldMeanings":
@@ -209,12 +414,12 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
             if (!args.dataFindings) {
               toolResult = { error: "Missing dataFindings; run analyzeDynamically first" };
             } else {
-              toolResult = generateDynamicInsights(args.userIntent, args.dataFindings);
+              toolResult = await generateDynamicInsights(args.userIntent, args.dataFindings);
               analysisResults.insights = toolResult;
             }
             break;
           case "buildDeveloperResponse":
-            return buildDeveloperResponse(args.recommendations, args.insights);
+            return buildDeveloperResponse(analysisResults.insights);
           default:
             console.warn(`Unknown tool function: ${toolCall.function.name}`);
             continue;
@@ -234,7 +439,7 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
           dataMapping: s.dataMapping,
           configuration: s.configuration,
         }));
-        return buildDeveloperResponse(recommendations, analysisResults.insights);
+        return buildDeveloperResponse(analysisResults.insights);
       }
     }
 
@@ -248,7 +453,12 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
   }
 }
 
-function analyzeDynamically(focusAreas: string[], depth: string = "detailed", targetFields: string[] = []): any {
+async function analyzeDynamically(
+  focusAreas: string[],
+  userPrompt: string,
+  depth: string = "detailed",
+  targetFields: string[] = []
+): Promise<any> {
   if (!Array.isArray(sourceData?.attributes) || sourceData.attributes.length === 0) {
     return { error: "Invalid or empty data source" };
   }
@@ -260,6 +470,7 @@ function analyzeDynamically(focusAreas: string[], depth: string = "detailed", ta
   const metrics: Record<string, any> = {};
   const timeSeries: Record<string, any> = {};
 
+  // Detect types and compute stats
   fields.forEach((field) => {
     const values = data.map((row) => row[field]).filter((v) => v !== undefined && v !== null);
     const uniqueValues = [...new Set(values)];
@@ -298,69 +509,71 @@ function analyzeDynamically(focusAreas: string[], depth: string = "detailed", ta
     }
   });
 
-  const defaultFields = ["resolved"];
-  const validFields = targetFields.filter((field) => fields.includes(field) && fieldTypes[field].type === "numeric");
-  const analysisFields = validFields.length > 0 ? validFields : defaultFields;
+  const defaultFields = targetFields;
+  const validFields = targetFields.filter(
+    (field) => fields.includes(field) && fieldTypes[field].type === "numeric"
+  );
+  const analysisFields = validFields.length > 0 ? validFields : Object.keys(fieldStats);
 
-  focusAreas.forEach((area) => {
-    const config = {
-      total: { metrics: ["sum"] },
-      trend: { metrics: ["time_series"], dateField: "date" },
-      performance: { metrics: ["avg", "sum", "ratio"] },
-    }[area.toLowerCase()];
-
-    if (!config) {
-      metrics[area] = { error: `Unsupported focus area: ${area}` };
-      return;
-    }
-
-    const { metrics: targetMetrics, dateField } = config;
-
+  const plan = await callAIToGeneratePlan(focusAreas, userPrompt, fieldTypes);
+  if (!plan || Object.keys(plan).length === 0) {
     analysisFields.forEach((field) => {
-      if (!fieldTypes[field] || fieldTypes[field].type !== "numeric") {
-        metrics[field] = { error: `Field ${field} is missing or non-numeric` };
-        return;
-      }
+      metrics[field] = { error: `Unsupported focus areas: ${focusAreas.join(", ")}` };
+    });
+  } else {
+    for (const [area, config] of Object.entries(plan)) {
+      const targetMetrics = config.metrics || [];
+      const dateField = config.dateField;
 
-      metrics[field] = metrics[field] || {};
-
-      targetMetrics.forEach((metric) => {
-        if (depth === "basic" && metric === "time_series") {
+      analysisFields.forEach((field) => {
+        if (!fieldTypes[field] || fieldTypes[field].type !== "numeric") {
+          metrics[field] = { error: `Field ${field} is missing or non-numeric` };
           return;
         }
 
-        switch (metric) {
-          case "sum":
-            metrics[field].total = fieldStats[field]?.sum || 0;
-            break;
-          case "avg":
-            metrics[field].average = fieldStats[field]?.avg || 0;
-            break;
-          case "time_series":
-            if (dateField && data) {
-              metrics[field].trend = data
-                .sort((a, b) => {
-                  const dateA = a[dateField] ? new Date(a[dateField] as string).getTime() : 0;
-                  const dateB = b[dateField] ? new Date(b[dateField] as string).getTime() : 0;
-                  return dateA - dateB;
-                })
-                .map((item) => ({
-                  date: item[dateField],
-                  value: item[field],
-                }));
-            }
-            break;
-          case "ratio":
-            if (analysisFields.length > 1 && fieldStats[analysisFields[0]] && fieldStats[analysisFields[1]]) {
-              metrics.performance_ratio = (fieldStats[analysisFields[0]].sum / fieldStats[analysisFields[1]].sum) || 0;
-            }
-            break;
-          default:
-            metrics[field][metric] = { error: `Unsupported metric: ${metric}` };
-        }
+        metrics[field] = metrics[field] || {};
+
+        targetMetrics.forEach((metric) => {
+          if (depth === "basic" && metric === "time_series") return;
+
+          switch (metric) {
+            case "sum":
+              metrics[field].total = fieldStats[field]?.sum || 0;
+              break;
+            case "avg":
+              metrics[field].average = fieldStats[field]?.avg || 0;
+              break;
+            case "time_series":
+              if (dateField && data) {
+                metrics[field].trend = data
+                  .sort((a, b) => {
+                    const dateA = a[dateField] ? new Date(a[dateField] as string).getTime() : 0;
+                    const dateB = b[dateField] ? new Date(b[dateField] as string).getTime() : 0;
+                    return dateA - dateB;
+                  })
+                  .map((item) => ({
+                    date: item[dateField],
+                    value: item[field],
+                  }));
+              }
+              break;
+            case "ratio":
+              if (
+                analysisFields.length > 1 &&
+                fieldStats[analysisFields[0]].sum &&
+                fieldStats[analysisFields[1]].sum
+              ) {
+                metrics.performance_ratio =
+                  (fieldStats[analysisFields[0]].sum / fieldStats[analysisFields[1]].sum) || 0;
+              }
+              break;
+            default:
+              metrics[field][metric] = { error: `Unsupported metric: ${metric}` };
+          }
+        });
       });
-    });
-  });
+    }
+  }
 
   return {
     fieldTypes,
@@ -374,6 +587,7 @@ function analyzeDynamically(focusAreas: string[], depth: string = "detailed", ta
     businessContext: businessContext(fields, fieldTypes, data),
   };
 }
+
 
 function inferFieldMeanings(fields: string[]): any {
   if (!Array.isArray(fields) || fields.length === 0) {
@@ -453,94 +667,12 @@ function inferFieldMeanings(fields: string[]): any {
   return meanings;
 }
 
-function generateDynamicInsights(userIntent: string, dataFindings: any): Insight | { error: string } {
+async function generateDynamicInsights(userIntent: string, dataFindings: any) {
   if (!userIntent || !dataFindings) {
     return { error: "Invalid user intent or data findings" };
   }
-
-  const insights: Insight = {
-    keyFindings: [],
-    businessImplications: [],
-    recommendedActions: [],
-    visualizationStrategies: [],
-  };
-
-  for (const field in dataFindings) {
-    if (dataFindings[field].total) {
-      insights.keyFindings.push({
-        type: "aggregation",
-        description: `Total count of ${field}: ${dataFindings[field].total}`,
-        value: dataFindings[field].total,
-      });
-      const kpiComponent = componentList.find((c) => c.component.toLowerCase().includes("kpi"));
-      if (kpiComponent) {
-        insights.visualizationStrategies.push({
-          primary: "performance_dashboard",
-          component: kpiComponent.component,
-          purpose: `Display total ${field} count`,
-          dataMapping: {
-            value: dataFindings[field].total,
-            label: field,
-          },
-          configuration: {
-            title: `Total ${field}`,
-            color: "#3B82F6",
-            format: "number",
-          },
-        });
-      }
-    }
-  }
-
-  for (const field in dataFindings) {
-    if (dataFindings[field].trend) {
-      const trendData = dataFindings[field].trend;
-      const values = trendData.map((d: any) => d.value);
-      const trendVal = values.length > 1 ? trend(values) : 0;
-      const description = `Trend for ${field} is ${trendVal > 0 ? "increasing" : trendVal < 0 ? "decreasing" : "stable"}`;
-      insights.keyFindings.push({
-        type: "trend",
-        description,
-        data: trendData,
-      });
-      const lineComponent = componentList.find((c) => c.component.toLowerCase().includes("line"));
-      if (lineComponent) {
-        insights.visualizationStrategies.push({
-          primary: "time_series_analysis",
-          component: lineComponent.component,
-          purpose: `Visualize ${field} trend over time`,
-          dataMapping: {
-            xField: "date",
-            yField: field,
-          },
-          configuration: {
-            title: `${field} Trend`,
-            xAxisLabel: "Date",
-            yAxisLabel: field,
-            lineColor: "#10B981",
-            type: "line",
-            datasets: [
-              {
-                label: field,
-                data: trendData.map((d: any) => d.value),
-                borderColor: "#10B981",
-                fill: false,
-              },
-            ],
-          },
-        });
-      }
-    }
-  }
-
-  insights.businessImplications = [
-    `The trend in ${Object.keys(dataFindings)[0] || "resolved tickets"} indicates operational efficiency changes.`,
-  ];
-  insights.recommendedActions = [
-    `Monitor ${Object.keys(dataFindings)[0] || "resolved tickets"} closely to identify bottlenecks.`,
-  ];
-
-  return insights;
+  let res = await _generateDynamicInsights(userIntent, dataFindings);
+  return res;
 }
 
 function mapMetricsToDataFields(metrics: string[], dataFindings: any): Record<string, string> {
@@ -611,27 +743,17 @@ function analyzeTrend(
   return { description, data: trendData };
 }
 
-function buildDeveloperResponse(recommendations: any[], insights: Insight): { action: string; action_input: any } {
+function buildDeveloperResponse(insights: any) {
   const response = {
     message: naturalMessage(insights),
     components: [] as any[],
   };
 
-  recommendations.forEach((rec) => {
-    const component = availableComponent(rec.componentType);
-    if (component) {
-      response.components.push({
-        component: component.component,
-        description: rec.purpose,
-        inputs: inputsFromData(rec.dataMapping),
-        configuration: rec.configuration,
-      });
-    }
-  });
+
 
   return {
     action: "success",
-    action_input: response,
+    action_input: insights,
   };
 }
 
