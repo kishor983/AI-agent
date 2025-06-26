@@ -80,20 +80,32 @@ Example Output: [
 
 const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
-    type: "function",
-    function: {
-      name: "analyzeDynamically",
-      description: "Analyzes data dynamically based on focus areas (e.g., 'trend', 'performance', 'total') and optional target fields (e.g., 'resolved', 'ticket'). If no fields are specified, defaults to relevant fields like 'resolved'.",
-      parameters: {
-        type: "object",
-        properties: {
-          focusAreas: { type: "array", items: { type: "string" } },
-          analysisDepth: { type: "string", enum: ["basic", "detailed"], default: "detailed" },
-          targetFields: { type: "array", items: { type: "string" } },
+    "type": "function",
+    "function": {
+      "name": "analyzeDynamically",
+      "description": "Analyzes data dynamically based on focus areas (e.g., 'trend', 'performance', 'total'), target fields (e.g., 'resolved', 'ticket'), and a date field for time-series analysis. All parameters are required, inferred from user input if not explicitly specified. Returns a clarification request if inference fails.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "focusAreas": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Analysis types (e.g., 'trend', 'performance', 'total'). Inferred from input (e.g., 'growth' → 'trend')."
+          },
+          "analysisDepth": {
+            "type": "string",
+            "enum": ["basic", "detailed"],
+            "description": "Depth of analysis. Inferred as 'detailed' unless 'basic' or 'simple' is specified."
+          },
+          "targetFields": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Fields to analyze (e.g., 'resolved'). Inferred from input or defaults to 'resolved' if ambiguous."
+          }
         },
-        required: ["focusAreas"],
-      },
-    },
+        "required": ["focusAreas", "analysisDepth", "targetFields"]
+      }
+    }
   },
   {
     type: "function",
@@ -236,6 +248,200 @@ Return only valid JSON in this format:
     return {};
   }
 }
+function calculateAdditionalMetrics(timeSeries: Array<{ date: string; value: number }>): {
+  trendSlope: number;
+  seasonality: string;
+  outliers: Array<{ date: string; value: number }>;
+  sparsity: number;
+} {
+  const values = timeSeries.map(item => item.value).filter(v => !isNaN(v));
+  const dates = timeSeries.map(item => item.date);
+
+  const n = values.length;
+  if (n === 0) {
+    return {
+      trendSlope: 0,
+      seasonality: "none",
+      outliers: [],
+      sparsity: 1,
+    };
+  }
+
+  // Trend Slope (using linear regression)
+  const indices = Array.from({ length: n }, (_, i) => i);
+  const meanX = indices.reduce((a, b) => a + b, 0) / n;
+  const meanY = values.reduce((a, b) => a + b, 0) / n;
+  const numerator = indices.reduce((sum, x, i) => sum + (x - meanX) * (values[i] - meanY), 0);
+  const denominator = indices.reduce((sum, x) => sum + (x - meanX) ** 2, 0);
+  const trendSlope = denominator ? numerator / denominator : 0;
+
+  // Seasonality (check for monthly autocorrelation at lag 12)
+  const autocorrelation = (lag: number) => {
+    const shifted = values.slice(lag);
+    const original = values.slice(0, values.length - lag);
+    const mean = meanY;
+    const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length;
+    const covariance = shifted.reduce((sum, v, i) => sum + (v - mean) * (original[i] - mean), 0) / shifted.length;
+    return variance ? covariance / variance : 0;
+  };
+  const seasonality = values.length >= 24 && autocorrelation(12) > 0.3 ? "monthly" : "none";
+
+  // Outliers (outside avg ± 2 * stdDev)
+  const variance =
+    values.reduce((sum, v) => sum + (v - meanY) ** 2, 0) / values.length;
+  const stdDev = Math.sqrt(variance);
+  const outliers = timeSeries.filter(
+    item => item.value > meanY + 2 * stdDev || item.value < meanY - 2 * stdDev
+  );
+
+  // Sparsity (missing months between first and last date)
+  const expectedDates: string[] = [];
+  const firstDate = new Date(dates[0]);
+  const lastDate = new Date(dates[dates.length - 1]);
+  let currentDate = new Date(firstDate);
+  while (currentDate <= lastDate) {
+    expectedDates.push(currentDate.toISOString().split("T")[0]);
+    currentDate.setMonth(currentDate.getMonth() + 1);
+  }
+  const sparsity = 1 - dates.length / expectedDates.length;
+
+  return { trendSlope, seasonality, outliers, sparsity };
+}
+
+// Predictive analytics function
+async function predictTrends(
+  stats: any,
+  field: string,
+  dateField: string,
+  data: DataRecord[],
+  forecastPeriods: number = 3
+): Promise<{ date: string; value: number }[] | { error: string }> {
+  // Validate inputs
+  if (!field || !dateField || !data || data.length < 2) {
+    return { error: "Invalid input: field, dateField, or sufficient data missing" };
+  }
+
+  // Extract time-series data
+  const timeSeries = data
+    .filter(row => row[field] !== undefined && row[dateField] !== undefined)
+    .map(row => ({
+      date: row[dateField] as string,
+      value: Number(row[field]),
+    }))
+    .filter(item => !isNaN(item.value))
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+  if (timeSeries.length < 2) {
+    return { error: "Insufficient valid data for forecasting" };
+  }
+  let {
+    trendSlope,
+    seasonality,
+    outliers,
+    sparsity,
+  } = calculateAdditionalMetrics(timeSeries);
+  // Prepare prompt for OpenAI
+  const systemPrompt = `
+  You are a predictive analytics expert tasked with forecasting future values for the next ${forecastPeriods} periods based on historical time-series data and statistical summaries. Your goal is to produce accurate, realistic predictions that align with the data's patterns and business context.
+  
+  **Input Data**:
+  - **Time-Series Data**: Array of { date: string, value: number } representing historical values (e.g., resolved tickets per month).
+  - **Statistical Summary**:
+    - min: ${stats.min} (minimum value in the dataset)
+    - max: ${stats.max} (maximum value in the dataset)
+    - avg: ${stats.avg} (average value)
+    - sum: ${stats.sum} (total sum of values)
+    - variance: ${stats.variance} (variance of values)
+    - trendSlope: ${trendSlope} (linear trend slope, positive for increasing, negative for decreasing)
+    - seasonality: ${seasonality} (indicates if periodic patterns exist, e.g., "monthly" or "none")
+    - outliers: ${JSON.stringify(outliers)} (array of dates with values > avg + 2 * sqrt(variance))
+    - sparsity: ${sparsity} (proportion of missing/null values, 0 to 1)
+  - **Business Context**: The data represents ticket resolution metrics (e.g., number of resolved tickets per month). Predictions should be practical for operational planning.
+  
+  **Historical Data**:
+  ${JSON.stringify(timeSeries, null, 2)}
+  
+  **Instructions**:
+  1. **Forecasting**:
+     - Generate forecasts for the next ${forecastPeriods} periods in the format: [{ date: string, value: number }, ...].
+     - Assume monthly intervals starting from the last date in the data (e.g., if last date is "2025-06-01", next is "2025-07-01").
+     - Use the trendSlope to guide the direction and magnitude of predictions.
+     - If seasonality is present, incorporate periodic patterns (e.g., spikes every 3 months).
+     - Keep predicted values within realistic bounds (min: ${stats.min}, max: ${stats.max}) unless trendSlope suggests a breakout.
+  2. **Handle Variability**:
+     - Use variance (${stats.variance}) to adjust prediction confidence; high variance indicates more uncertainty, so smooth predictions.
+     - Downweight outliers (${JSON.stringify(outliers)}) to avoid skewing forecasts.
+  3. **Handle Sparsity**:
+     - If sparsity (${sparsity}) is high (>0.3), rely more on trendSlope and avg for predictions, as data may be unreliable.
+  4. **Business Alignment**:
+     - Ensure predictions are practical for ticket resolution (e.g., non-negative values, feasible growth rates).
+     - If trendSlope is near zero, predict stable values close to avg (${stats.avg}).
+  5. **Edge Cases**:
+     - If data has < 3 points, return conservative predictions based on avg and trendSlope.
+     - If dates are irregular, interpolate missing months before forecasting.
+  6. **Output**:
+     - Return only valid JSON: [{ date: string, value: number }, ...].
+     - Ensure dates are in "YYYY-MM-DD" format and values are numbers (no strings or nulls).
+  
+- All descriptions must be concise and client-friendly. Avoid detailed analysis or technical language.
+- Describe only what is essential for decision-making — like value trends, spikes, or clear takeaways.
+
+  **Example Output**:
+   {
+    "forecast":
+    [
+      { "date": "2025-07-01", "value": 150 },
+      { "date": "2025-08-01", "value": 155 },
+      { "date": "2025-09-01", "value": 160 }
+    ],
+    "descriptions":"string"
+   }
+  `;
+  const apiKey = process.env.OPENAI_API_KEY;
+  const client = new OpenAI({
+    baseURL: "https://models.github.ai/inference",
+    apiKey: apiKey,
+  });
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: `Forecast the next ${forecastPeriods} values for ${field}.` },
+  ];
+
+  try {
+    const response = await client.chat.completions.create({
+      model: "openai/gpt-4.1-mini", // Adjust model as needed
+      messages,
+    });
+
+    const content = response.choices?.[0]?.message?.content;
+    if (!content) {
+      return { error: "No content returned from OpenAI" };
+    }
+
+    // Parse and validate response
+    const cleaned = content
+      .trim()
+      .replace(/^```json/, "")
+      .replace(/^```/, "")
+      .replace(/```$/, "")
+      .trim();
+
+    try {
+      const forecast: any = JSON.parse(cleaned) as Array<{ date: string; value: number }>;
+      if (!Array.isArray(forecast.forecast) || forecast.forecast.some((item: any) => !item.date || typeof item.value !== "number")) {
+        return { error: "Invalid forecast format from OpenAI" };
+      }
+      return forecast;
+    } catch (e) {
+      console.error("Parse error:", cleaned, e);
+      return { error: "Failed to parse OpenAI response as JSON" };
+    }
+  } catch (e) {
+    console.error("OpenAI API call failed:", (e as Error).message);
+    return { error: `API call failed: ${(e as Error).message}` };
+  }
+}
+
 async function _generateDynamicInsights(
   userIntent: string,
   dataFindings: any
@@ -269,9 +475,21 @@ async function _generateDynamicInsights(
   
   User Intent:
   ${userIntent}
+
+  businessContext:
+  ${JSON.stringify(dataFindings.businessContext, null, 2)}
   
+  anomalies:
+  ${JSON.stringify(dataFindings.anomalies, null, 2)}
+  
+  relationships:
+  ${JSON.stringify(dataFindings.relationships, null, 2)}
+ 
+  patterns:
+  ${JSON.stringify(dataFindings.patterns, null, 2)}
+ 
   Data Summary:
-  ${JSON.stringify(dataFindings, null, 2)}
+  ${JSON.stringify(dataFindings.metrics, null, 2)}
   
   You must return your response ONLY as valid JSON, exactly in this format:
   {
@@ -400,7 +618,7 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
         switch (toolCall.function.name) {
           case "analyzeDynamically":
 
-            toolResult = await analyzeDynamically(args.focusAreas, args.analysisDepth || "detailed", args.targetFields || []);
+            toolResult = await analyzeDynamically(args.focusAreas, userInput, args.analysisDepth || "detailed", args.targetFields || []);
             analysisResults.dataAnalysis = toolResult;
             break;
           case "inferFieldMeanings":
@@ -409,7 +627,7 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
             break;
           case "generateDynamicInsights":
             if (!args.dataFindings && analysisResults.dataAnalysis?.metrics) {
-              args.dataFindings = analysisResults.dataAnalysis.metrics;
+              args.dataFindings = analysisResults.dataAnalysis;
             }
             if (!args.dataFindings) {
               toolResult = { error: "Missing dataFindings; run analyzeDynamically first" };
@@ -456,7 +674,7 @@ export async function runAgent(userInput: string): Promise<{ action: string; act
 async function analyzeDynamically(
   focusAreas: string[],
   userPrompt: string,
-  depth: string = "detailed",
+  depth: string,
   targetFields: string[] = []
 ): Promise<any> {
   if (!Array.isArray(sourceData?.attributes) || sourceData.attributes.length === 0) {
@@ -469,6 +687,7 @@ async function analyzeDynamically(
   const fieldStats: Record<string, any> = {};
   const metrics: Record<string, any> = {};
   const timeSeries: Record<string, any> = {};
+  const predictions: Record<string, any> = {};
 
   // Detect types and compute stats
   fields.forEach((field) => {
@@ -516,6 +735,8 @@ async function analyzeDynamically(
   const analysisFields = validFields.length > 0 ? validFields : Object.keys(fieldStats);
 
   const plan = await callAIToGeneratePlan(focusAreas, userPrompt, fieldTypes);
+  // predictTrends
+
   if (!plan || Object.keys(plan).length === 0) {
     analysisFields.forEach((field) => {
       metrics[field] = { error: `Unsupported focus areas: ${focusAreas.join(", ")}` };
@@ -525,16 +746,16 @@ async function analyzeDynamically(
       const targetMetrics = config.metrics || [];
       const dateField = config.dateField;
 
-      analysisFields.forEach((field) => {
+      for (const field of analysisFields) {
         if (!fieldTypes[field] || fieldTypes[field].type !== "numeric") {
           metrics[field] = { error: `Field ${field} is missing or non-numeric` };
-          return;
+          continue;
         }
 
         metrics[field] = metrics[field] || {};
 
-        targetMetrics.forEach((metric) => {
-          if (depth === "basic" && metric === "time_series") return;
+        for (const metric of targetMetrics) {
+          if (depth === "basic" && metric === "time_series") continue;
 
           switch (metric) {
             case "sum":
@@ -570,9 +791,19 @@ async function analyzeDynamically(
             default:
               metrics[field][metric] = { error: `Unsupported metric: ${metric}` };
           }
-        });
-      });
+        }
+
+        if (area === "trend" && dateField) {
+          const forecast = await predictTrends(fieldStats[field], field, dateField, data);
+          if (!("error" in forecast)) {
+            predictions[field] = forecast;
+          } else {
+            predictions[field] = { error: forecast.error };
+          }
+        }
+      }
     }
+
   }
 
   return {
@@ -585,6 +816,7 @@ async function analyzeDynamically(
     anomalies: anomalies(data, fields, fieldStats),
     dataQuality: dataQuality(data, fields),
     businessContext: businessContext(fields, fieldTypes, data),
+    predictions,
   };
 }
 
@@ -672,7 +904,7 @@ async function generateDynamicInsights(userIntent: string, dataFindings: any) {
     return { error: "Invalid user intent or data findings" };
   }
   let res = await _generateDynamicInsights(userIntent, dataFindings);
-  return res;
+  return { ...res, predictions: { ...dataFindings.predictions } };
 }
 
 function mapMetricsToDataFields(metrics: string[], dataFindings: any): Record<string, string> {
