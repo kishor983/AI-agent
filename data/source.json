@@ -4,7 +4,7 @@
    "attributes": [
       {
          "ticket_id": "123",
-         "resolved": 5,
+         "resolved": 10,
          "date": "2025-06-01",
          "ticket": 10
       },
@@ -16,51 +16,159 @@
       },
       {
          "ticket_id": "125",
-         "resolved": 22,
+         "resolved": 30,
          "date": "2025-06-03",
          "ticket": 30
       },
       {
          "ticket_id": "126",
-         "resolved": 12,
+         "resolved": 40,
          "date": "2025-06-04",
          "ticket": 40
       },
       {
          "ticket_id": "127",
-         "resolved": 45,
+         "resolved": 50,
          "date": "2025-06-05",
          "ticket": 50
       },
       {
          "ticket_id": "128",
-         "resolved": 18,
+         "resolved": 60,
          "date": "2025-06-06",
          "ticket": 60
       },
       {
          "ticket_id": "129",
-         "resolved": 40,
+         "resolved": 70,
          "date": "2025-06-07",
          "ticket": 70
       },
       {
          "ticket_id": "130",
-         "resolved": 22,
+         "resolved": 80,
          "date": "2025-06-08",
          "ticket": 80
       },
       {
          "ticket_id": "131",
-         "resolved": 50,
+         "resolved": 90,
          "date": "2025-06-09",
          "ticket": 90
       },
       {
          "ticket_id": "132",
-         "resolved": 70,
+         "resolved": 100,
          "date": "2025-06-10",
          "ticket": 100
+      },
+      {
+         "ticket_id": "133",
+         "resolved": 110,
+         "date": "2025-06-11",
+         "ticket": 110
+      },
+      {
+         "ticket_id": "134",
+         "resolved": 120,
+         "date": "2025-06-12",
+         "ticket": 120
+      },
+      {
+         "ticket_id": "135",
+         "resolved": 130,
+         "date": "2025-06-13",
+         "ticket": 130
+      },
+      {
+         "ticket_id": "136",
+         "resolved": 140,
+         "date": "2025-06-14",
+         "ticket": 140
+      },
+      {
+         "ticket_id": "137",
+         "resolved": 150,
+         "date": "2025-06-15",
+         "ticket": 150
+      },
+      {
+         "ticket_id": "138",
+         "resolved": 160,
+         "date": "2025-06-16",
+         "ticket": 160
+      },
+      {
+         "ticket_id": "139",
+         "resolved": 170,
+         "date": "2025-06-17",
+         "ticket": 170
+      },
+      {
+         "ticket_id": "140",
+         "resolved": 180,
+         "date": "2025-06-18",
+         "ticket": 180
+      },
+      {
+         "ticket_id": "141",
+         "resolved": 190,
+         "date": "2025-06-19",
+         "ticket": 190
+      },
+      {
+         "ticket_id": "142",
+         "resolved": 200,
+         "date": "2025-06-20",
+         "ticket": 200
+      },
+      {
+         "ticket_id": "143",
+         "resolved": 210,
+         "date": "2025-06-21",
+         "ticket": 210
+      },
+      {
+         "ticket_id": "144",
+         "resolved": 220,
+         "date": "2025-06-22",
+         "ticket": 220
+      },
+      {
+         "ticket_id": "145",
+         "resolved": 230,
+         "date": "2025-06-23",
+         "ticket": 230
+      },
+      {
+         "ticket_id": "146",
+         "resolved": 240,
+         "date": "2025-06-24",
+         "ticket": 240
+      },
+      {
+         "ticket_id": "147",
+         "resolved": 250,
+         "date": "2025-06-25",
+         "ticket": 250
+      },
+      {
+         "ticket_id": "148",
+         "resolved": 260,
+         "date": "2025-06-26",
+         "ticket": 260
+      },
+      {
+         "ticket_id": "149",
+         "resolved": 270,
+         "date": "2025-06-27",
+         "ticket": 270
+      },
+      {
+         "ticket_id": "150",
+         "resolved": 280,
+         "date": "2025-06-28",
+         "ticket": 280
       }
    ]
 }
