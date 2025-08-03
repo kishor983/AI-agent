@@ -2,10 +2,13 @@ import OpenAI from 'openai'
 import { ChatOpenAI } from "@langchain/openai";
 import { BufferMemory } from "langchain/memory";
 import { ConversationChain } from "langchain/chains";
+import dotenv from "dotenv";
+dotenv.config();
 let session:Map<string,BufferMemory>=new Map();
 export async function runAgent(param: any) {
   const client = new OpenAI({
-    apiKey: "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",
+    apiKey:process.env.OPENAI_API_KEY,
+    //  "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",
     baseURL: 'https://models.github.ai/inference'
   })
   try {
@@ -44,7 +47,7 @@ export async function AskAgent(param: any) {
 
   // 🔹 Initialize the LLM
   const llm = new ChatOpenAI({
-    apiKey: "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",
+    apiKey:process.env.OPENAI_API_KEY,
     model: "openai/gpt-4.1",
     temperature: 0.7,
     configuration: { baseURL: "https://models.github.ai/inference" }
